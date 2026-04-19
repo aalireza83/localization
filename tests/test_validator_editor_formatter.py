@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,6 +12,25 @@ from localization.exceptions import LocaleEditError, PlaceholderError, ValueForm
 from localization.formatter import LocaleValueFormatter
 from localization.repository import LocaleRepository
 from localization.validator import LocaleValidator
+
+
+class FakeFaRenderer:
+    def render_date(self, value, *, locale: str, pattern: str | None = None) -> str:
+        return f"jalali-date:{value.isoformat()}:{locale}:{pattern or 'default'}"
+
+    def render_datetime(self, value, *, locale: str, pattern: str | None = None) -> str:
+        return f"jalali-datetime:{value.isoformat()}:{locale}:{pattern or 'default'}"
+
+
+class PrefixRenderer:
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+
+    def render_date(self, value, *, locale: str, pattern: str | None = None) -> str:
+        return f"{self.prefix}-date:{value.isoformat()}"
+
+    def render_datetime(self, value, *, locale: str, pattern: str | None = None) -> str:
+        return f"{self.prefix}-datetime:{value.isoformat()}"
 
 
 def test_validator_accepts_valid_locales(sample_i18n_files: tuple[Path, Path]) -> None:
@@ -79,15 +99,82 @@ def test_editor_rejects_meta_updates(sample_i18n_files: tuple[Path, Path]) -> No
         editor.set_value("fa", "_meta.version", 2)
 
 
-def test_locale_value_formatter_uses_converter() -> None:
+def test_formatter_default_timezone_falls_back_to_utc() -> None:
     value = datetime(2026, 4, 15, 12, 30, 0, tzinfo=timezone.utc)
+    formatter = LocaleValueFormatter(default_now=lambda: value)
 
+    assert formatter.format_datetime(value, locale="en") == "2026/04/15 12:30:00"
+
+
+def test_formatter_uses_locale_timezone_before_default() -> None:
+    value = datetime(2026, 4, 15, 8, 30, 0, tzinfo=timezone.utc)
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
+        default_timezone=ZoneInfo("UTC"),
+    )
+
+    assert formatter.format_datetime(value, locale="fa") == "2026/04/15 12:00:00"
+
+
+def test_formatter_uses_default_renderer_fallback() -> None:
+    value = datetime(2026, 4, 15, 8, 30, 0, tzinfo=timezone.utc)
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        default_renderer=PrefixRenderer("default"),
+    )
+
+    assert formatter.format_datetime(value, locale="missing") == "default-datetime:2026-04-15T08:30:00+00:00"
+
+
+def test_formatter_uses_locale_renderer_for_farsi() -> None:
+    value = datetime(2026, 4, 15, 8, 30, 0, tzinfo=timezone.utc)
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
+        default_renderer=PrefixRenderer("default"),
+        renderers={"fa": FakeFaRenderer()},
+    )
+
+    output = formatter.format_datetime(value, locale="fa", pattern="ignored-by-custom")
+    assert output.startswith("jalali-datetime:2026-04-15T12:00:00+03:30:fa")
+
+
+def test_formatter_keeps_naive_datetime_when_policy_keep() -> None:
+    value = datetime(2026, 4, 15, 8, 30, 0)
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
+        naive_datetime_policy="keep",
+    )
+
+    assert formatter.format_datetime(value, locale="fa") == "2026/04/15 08:30:00"
+
+
+def test_formatter_assumes_naive_source_timezone_when_configured() -> None:
+    value = datetime(2026, 4, 15, 8, 30, 0)
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
+        naive_datetime_policy="assume_source",
+        naive_source_timezone=ZoneInfo("UTC"),
+    )
+
+    assert formatter.format_datetime(value, locale="fa") == "2026/04/15 12:00:00"
+
+
+def test_formatter_rejects_assume_source_without_source_timezone() -> None:
+    with pytest.raises(ValueError):
+        LocaleValueFormatter(default_now=lambda: datetime(2026, 4, 15), naive_datetime_policy="assume_source")
+
+
+def test_formatter_supports_legacy_converter_via_adapter() -> None:
+    value = datetime(2026, 4, 15, 12, 30, 0, tzinfo=timezone.utc)
     formatter = LocaleValueFormatter(
         default_now=lambda: value,
         converters={"fa": lambda dt: dt.replace(year=2000)},
     )
 
-    assert formatter.format_date(value.date(), locale="en") == "2026/04/15"
     assert formatter.format_datetime(value, locale="fa") == "2000/04/15 12:30:00"
 
 
