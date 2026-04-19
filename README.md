@@ -10,7 +10,7 @@ A production-focused Python localization package for loading, validating, queryi
 - Explicit wrapper-based placeholder formatting
 - Validation of locale schemas and placeholder compatibility
 - Safe path-based locale editing
-- Locale-aware date/datetime formatting through pluggable converters
+- Locale-driven date/datetime conversion via typed converters with explicit fallback
 
 ---
 
@@ -44,51 +44,22 @@ project/
 
 > `default_locale` is enforced as `en`.
 
-### Locale schema
-
-```json
-{
-  "_meta": {"locale": "en", "version": 1},
-  "messages": {
-    "user": {
-      "greeting": "Hello {name}",
-      "report": "Date {date}, datetime {dt}, amount {amount}, status {status}, raw {raw_date}"
-    }
-  },
-  "enums": {
-    "order_status": {
-      "title": "Order status",
-      "values": {
-        "pending": {"label": "Pending payment", "description": "Awaiting payment", "order": 10}
-      }
-    }
-  },
-  "faqs": {
-    "payment": {
-      "title": "Payment questions",
-      "items": {
-        "refund_time": {
-          "question": "How long does a refund take?",
-          "answer": "Refunds usually take 3 to 7 business days.",
-          "order": 20,
-          "tags": ["payment", "refund"]
-        }
-      }
-    }
-  }
-}
-```
-
 ---
 
 ## Quick start
 
 ```python
-from localization import LocaleValueFormatter, build_i18n_runtime
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from localization import LocaleValueFormatter, TimezoneLocaleConverter, build_i18n_runtime
 
 formatter = LocaleValueFormatter(
-    default_now=lambda: ...,  # callable returning datetime
-    converters={"fa": lambda value: value},
+    default_now=lambda: datetime.now(tz=ZoneInfo("UTC")),
+    converters={
+        "fa": TimezoneLocaleConverter(target_timezone=ZoneInfo("Asia/Tehran")),
+    },
+    default_converter=TimezoneLocaleConverter(target_timezone=ZoneInfo("UTC")),
 )
 
 repo, validator, i18n, editor = build_i18n_runtime(
@@ -99,6 +70,74 @@ repo, validator, i18n, editor = build_i18n_runtime(
 
 validator.validate_all()
 print(i18n.msg("user.greeting", locale="fa", name="Sara"))
+```
+
+---
+
+## Date/datetime converter architecture
+
+`LocaleValueFormatter` resolves converters in this exact order:
+
+1. Locale-specific converter from `converters[locale]`
+2. `default_converter`
+3. Built-in identity converter (no-op)
+
+This means formatting always works, and fallback behavior is explicit and predictable.
+
+### Converter contract
+
+Use `LocaleConverter` for strongly typed implementations:
+
+```python
+from datetime import date, datetime
+from localization import LocaleConverter
+
+class MyConverter(LocaleConverter):
+    def convert_date(self, value: date, *, locale: str) -> date:
+        return value
+
+    def convert_datetime(self, value: datetime, *, locale: str) -> datetime:
+        return value
+```
+
+For backward compatibility, legacy callables are still accepted:
+
+```python
+# Legacy callable style still supported
+converters={"fa": lambda value: value}
+```
+
+---
+
+## Timezone behavior
+
+`TimezoneLocaleConverter` provides standard-library timezone normalization (`zoneinfo` + `datetime`).
+
+### Aware datetimes
+
+- If `target_timezone` is set, aware datetimes are normalized with `astimezone(target_timezone)`.
+
+### Naive datetimes
+
+Two explicit modes are supported:
+
+1. **Safe default (recommended):** keep naive values unchanged.
+   - `assume_naive_input_timezone=False` (default)
+2. **Interpretive mode:** attach a source timezone before normalization.
+   - `assume_naive_input_timezone=True`
+   - must also set `naive_input_timezone`
+
+Example:
+
+```python
+from zoneinfo import ZoneInfo
+from localization import TimezoneLocaleConverter
+
+fa_converter = TimezoneLocaleConverter(
+    target_timezone=ZoneInfo("Asia/Tehran"),
+    assume_naive_input_timezone=True,
+    naive_input_timezone=ZoneInfo("UTC"),
+)
 ```
 
 ---
@@ -177,6 +216,8 @@ In the output:
 - `I18nService`
 - `LocaleEditor`
 - `LocaleValueFormatter`
+- `LocaleConverter`
+- `TimezoneLocaleConverter`
 
 ### Wrapper helpers
 
@@ -226,6 +267,27 @@ Backward-compatible aliases:
 
 - `TranslationValidationError`
 - `TranslationKeyNotFoundError`
+
+---
+
+## Migration notes (formatter redesign)
+
+### What changed
+
+1. `LocaleValueFormatter` now supports `default_converter` explicitly.
+2. Converters are now modeled as `LocaleConverter` (`convert_date` / `convert_datetime`).
+3. Converter resolution order is now documented and guaranteed.
+4. New `TimezoneLocaleConverter` provides explicit timezone handling for aware and naive datetimes.
+
+### Backward compatibility
+
+- Existing callable converters (`Callable[[date | datetime], date | datetime]`) are still accepted.
+- Wrapper helpers (`wrapped_date`, `wrapped_datetime`, `grouped_number`, `enum_ref`) are unchanged.
+
+### Potential behavior differences
+
+- If no locale-specific converter exists, formatter now tries `default_converter` before identity behavior.
+- Naive datetime handling is now explicit when using `TimezoneLocaleConverter`.
 
 ---
 
