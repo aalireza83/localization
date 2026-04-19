@@ -1,17 +1,43 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone, tzinfo
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from math import isfinite
-from typing import Any, Callable
+from typing import Callable, Protocol, runtime_checkable
 
 from localization.exceptions import ValueFormattingError
 
-DateLike = date | datetime
-Converter = Callable[[DateLike], DateLike]
 NowProvider = Callable[[], datetime]
+
+
+@runtime_checkable
+class LocaleRenderer(Protocol):
+    """Render localized temporal values to final strings."""
+
+    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
+        """Render date value for locale."""
+
+    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
+        """Render datetime value for locale."""
+
+
+@dataclass(frozen=True, slots=True)
+class StrftimeRenderer:
+    """Built-in renderer based on strftime patterns."""
+
+    default_date_pattern: str = "%Y/%m/%d"
+    default_datetime_pattern: str = "%Y/%m/%d %H:%M:%S"
+
+    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
+        return value.strftime(pattern or self.default_date_pattern)
+
+    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
+        return value.strftime(pattern or self.default_datetime_pattern)
+
+
+_BUILTIN_RENDERER = StrftimeRenderer()
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,7 +45,7 @@ class LocalizedDate:
     """Explicit wrapper for locale-aware date formatting in placeholders."""
 
     value: date
-    pattern: str = "%Y/%m/%d"
+    pattern: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +53,7 @@ class LocalizedDateTime:
     """Explicit wrapper for locale-aware datetime formatting in placeholders."""
 
     value: datetime
-    pattern: str = "%Y/%m/%d %H:%M:%S"
+    pattern: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,29 +81,66 @@ class EnumReference:
 
 @dataclass(slots=True)
 class LocaleValueFormatter:
-    """Formats explicitly wrapped placeholder values for a given locale."""
+    """Formats wrapped values using a two-stage temporal pipeline.
+
+    Stage 1: timezone normalization for datetime values.
+    Stage 2: locale renderer produces final string.
+
+    Timezone resolution order:
+    1) locale_timezones[locale]
+    2) default_timezone
+    3) UTC
+
+    Renderer resolution order:
+    1) renderers[locale]
+    2) default_renderer
+    3) built-in StrftimeRenderer
+
+    Naive datetime behavior:
+    - If naive_input_timezone is None (default), naive datetimes are left untouched.
+    - If naive_input_timezone is set, naive datetimes are interpreted in that timezone
+      before normalizing to the resolved target timezone.
+    """
 
     default_now: NowProvider
-    converters: dict[str, Converter] | None = None
+    renderers: dict[str, LocaleRenderer] | None = None
+    default_renderer: LocaleRenderer | None = None
+    locale_timezones: dict[str, tzinfo] | None = None
+    default_timezone: tzinfo | None = None
+    naive_input_timezone: tzinfo | None = None
+    _resolved_renderers: dict[str, LocaleRenderer] = field(init=False, repr=False)
+    _resolved_default_renderer: LocaleRenderer = field(init=False, repr=False)
 
-    def _convert(self, value: DateLike, locale: str) -> DateLike:
-        if self.converters and locale in self.converters:
-            return self.converters[locale](value)
-        return value
+    def __post_init__(self) -> None:
+        self._resolved_renderers = dict(self.renderers or {})
+        self._resolved_default_renderer = self.default_renderer or _BUILTIN_RENDERER
 
-    def format_datetime(self, value: datetime, *, locale: str, pattern: str = "%Y/%m/%d %H:%M:%S") -> str:
-        converted = self._convert(value, locale)
-        if not isinstance(converted, datetime):
-            raise ValueFormattingError("Datetime converter must return datetime for datetime input.")
-        return converted.strftime(pattern)
+    def _resolve_timezone(self, locale: str) -> tzinfo:
+        if self.locale_timezones and locale in self.locale_timezones:
+            return self.locale_timezones[locale]
+        if self.default_timezone is not None:
+            return self.default_timezone
+        return timezone.utc
 
-    def format_date(self, value: date, *, locale: str, pattern: str = "%Y/%m/%d") -> str:
-        converted = self._convert(value, locale)
-        if not isinstance(converted, date):
-            raise ValueFormattingError("Date converter must return date-compatible value for date input.")
-        return converted.strftime(pattern)
+    def _normalize_datetime(self, value: datetime, *, locale: str) -> datetime:
+        target_timezone = self._resolve_timezone(locale)
+        if value.tzinfo is None:
+            if self.naive_input_timezone is None:
+                return value
+            value = value.replace(tzinfo=self.naive_input_timezone)
+        return value.astimezone(target_timezone)
 
-    def now_as_text(self, *, locale: str, pattern: str = "%Y/%m/%d %H:%M:%S") -> str:
+    def _resolve_renderer(self, locale: str) -> LocaleRenderer:
+        return self._resolved_renderers.get(locale, self._resolved_default_renderer)
+
+    def format_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
+        normalized = self._normalize_datetime(value, locale=locale)
+        return self._resolve_renderer(locale).render_datetime(normalized, locale=locale, pattern=pattern)
+
+    def format_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
+        return self._resolve_renderer(locale).render_date(value, locale=locale, pattern=pattern)
+
+    def now_as_text(self, *, locale: str, pattern: str | None = None) -> str:
         return self.format_datetime(self.default_now(), locale=locale, pattern=pattern)
 
     def format_grouped_number(self, value: int | float | Decimal | str) -> str:
@@ -111,9 +174,8 @@ class LocaleValueFormatter:
                 raise ValueFormattingError(f"Invalid grouped number string: {value!r}") from exc
             return format(decimal_value, "f")
 
-        if isinstance(value, float):
-            if not isfinite(value):
-                raise ValueFormattingError(f"Invalid grouped number value: {value!r}")
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueFormattingError(f"Invalid grouped number value: {value!r}")
 
         try:
             decimal_value = Decimal(str(value))
@@ -122,13 +184,13 @@ class LocaleValueFormatter:
         return format(decimal_value, "f")
 
 
-def wrapped_date(value: date, *, pattern: str = "%Y/%m/%d") -> LocalizedDate:
+def wrapped_date(value: date, *, pattern: str | None = None) -> LocalizedDate:
     """Create an explicit wrapped date placeholder value."""
 
     return LocalizedDate(value=value, pattern=pattern)
 
 
-def wrapped_datetime(value: datetime, *, pattern: str = "%Y/%m/%d %H:%M:%S") -> LocalizedDateTime:
+def wrapped_datetime(value: datetime, *, pattern: str | None = None) -> LocalizedDateTime:
     """Create an explicit wrapped datetime placeholder value."""
 
     return LocalizedDateTime(value=value, pattern=pattern)

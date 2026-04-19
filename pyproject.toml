@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localization"
+version = "0.1.0"
+description = "Small explicit JSON localization toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Localization Maintainers" }]
+keywords = ["i18n", "localization", "translation", "json"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+
+[tool.setuptools]
+packages = ["localization"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

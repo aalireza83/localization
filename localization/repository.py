@@ -26,14 +26,15 @@ class LocaleRepository:
     def locale_exists(self, locale: str) -> bool:
         return locale in self._manifest["locales"]
 
-    def resolve_locale(self, locale: str | None, *, fallback_to_default: bool = True) -> str:
+    def resolve_locale(self, locale: str | None) -> str:
         if locale is None:
             return self.default_locale
-        normalized = locale.strip().lower()
+
+        normalized = locale.strip()
+        if not normalized:
+            raise LocaleNotFoundError("Locale cannot be empty.")
         if self.locale_exists(normalized):
             return normalized
-        if fallback_to_default:
-            return self.default_locale
         raise LocaleNotFoundError(f"Locale '{locale}' is not declared in the manifest.")
 
     def get_locale_descriptors(self) -> dict[str, LocaleDescriptor]:
@@ -69,7 +70,7 @@ class LocaleRepository:
         return deepcopy(data)
 
     def save_locale(self, locale: str, data: dict[str, Any]) -> None:
-        resolved = self.resolve_locale(locale, fallback_to_default=False)
+        resolved = self.resolve_locale(locale)
         path = self.locale_path(resolved)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -94,25 +95,28 @@ class LocaleRepository:
         default_locale = raw.get("default_locale")
         locales = raw.get("locales")
 
-        if default_locale != "en":
-            raise ManifestError("Manifest 'default_locale' must be 'en'.")
+        if not isinstance(default_locale, str) or not default_locale.strip():
+            raise ManifestError("Manifest must define a non-empty string 'default_locale'.")
+        default_locale = default_locale.strip()
+
         if not isinstance(locales, dict) or not locales:
             raise ManifestError("Manifest must define a non-empty 'locales' object.")
-        if "en" not in locales:
-            raise ManifestError("Manifest must include 'en' in 'locales'.")
+        if default_locale not in locales:
+            raise ManifestError("Manifest 'default_locale' must be declared under 'locales'.")
 
         for locale_code, descriptor in locales.items():
-            if not isinstance(locale_code, str) or not locale_code:
+            if not isinstance(locale_code, str) or not locale_code.strip():
                 raise ManifestError("Manifest locale codes must be non-empty strings.")
             if not isinstance(descriptor, dict):
                 raise ManifestError(f"Manifest entry for locale '{locale_code}' must be an object.")
+
             direction = descriptor.get("direction")
             if direction is not None and direction not in {"ltr", "rtl"}:
                 raise ManifestError(
                     f"Invalid direction for locale '{locale_code}': {direction!r}. Use 'ltr' or 'rtl'."
                 )
 
-        return {"default_locale": "en", "locales": locales}
+        return {"default_locale": default_locale, "locales": locales}
 
     @staticmethod
     def _load_json_file(path: Path) -> Any:
