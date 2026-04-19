@@ -10,7 +10,7 @@ A production-focused Python localization package for loading, validating, queryi
 - Explicit wrapper-based placeholder formatting
 - Validation of locale schemas and placeholder compatibility
 - Safe path-based locale editing
-- Locale-aware date/datetime formatting through pluggable converters
+- Locale-aware date/datetime formatting through explicit per-locale converters with default fallback
 
 ---
 
@@ -84,11 +84,19 @@ project/
 ## Quick start
 
 ```python
-from localization import LocaleValueFormatter, build_i18n_runtime
+from datetime import timezone
+from zoneinfo import ZoneInfo
+
+from localization import LocaleValueFormatter, TimezoneAwareLocaleValueConverter, build_i18n_runtime
 
 formatter = LocaleValueFormatter(
     default_now=lambda: ...,  # callable returning datetime
-    converters={"fa": lambda value: value},
+    converters={
+        "fa": TimezoneAwareLocaleValueConverter(
+            target_timezone=ZoneInfo("Asia/Tehran"),
+            assume_naive_source_timezone=timezone.utc,
+        )
+    },
 )
 
 repo, validator, i18n, editor = build_i18n_runtime(
@@ -100,6 +108,50 @@ repo, validator, i18n, editor = build_i18n_runtime(
 validator.validate_all()
 print(i18n.msg("user.greeting", locale="fa", name="Sara"))
 ```
+
+---
+
+## Formatter architecture (date/datetime)
+
+`LocaleValueFormatter` routes **all wrapped date/datetime values** through a converter pipeline.
+
+### Converter interface
+
+Converters implement `LocaleValueConverter` with two explicit methods:
+
+- `convert_date(value: date, *, locale: str) -> date`
+- `convert_datetime(value: datetime, *, locale: str) -> datetime`
+
+This keeps date and datetime conversion separate, predictable, and strongly typed.
+
+### Resolution/fallback order
+
+When formatting wrapped date or datetime values, converter selection is:
+
+1. locale-specific converter from `converters[locale]`
+2. `default_converter`
+3. built-in no-op `IdentityLocaleValueConverter` (returns input unchanged)
+
+This behavior is explicit and stable.
+
+### Timezone behavior
+
+Use `TimezoneAwareLocaleValueConverter` for timezone normalization.
+
+Rules:
+
+- Aware datetimes: converted to `target_timezone` (when provided).
+- Naive datetimes:
+  - If `assume_naive_source_timezone` is set, naive values are first interpreted in that timezone.
+  - Otherwise, naive values are left naive (no implicit timezone assumptions).
+- Date values: unchanged by default.
+
+For locale-specific calendars (e.g., Jalali), create a custom converter implementing `LocaleValueConverter` and apply calendar conversion inside `convert_date` / `convert_datetime`.
+
+### Legacy callable compatibility
+
+For backward compatibility, `converters={"fa": lambda value: ...}` is still accepted.
+Callable converters are internally adapted to the protocol.
 
 ---
 
@@ -178,6 +230,13 @@ In the output:
 - `LocaleEditor`
 - `LocaleValueFormatter`
 
+### Converter classes/protocol
+
+- `LocaleValueConverter` (protocol)
+- `TimezoneAwareLocaleValueConverter`
+- `IdentityLocaleValueConverter`
+- `CallableLocaleValueConverter`
+
 ### Wrapper helpers
 
 - `wrapped_date`
@@ -208,6 +267,30 @@ editor.delete_value("fa", "faqs.payment.items.refund_time")
 
 - `_meta` paths are protected
 - edits are validated before writing
+
+---
+
+## Migration notes
+
+### What changed
+
+- Date/datetime conversion now uses an explicit converter protocol (`LocaleValueConverter`) with separate `convert_date` and `convert_datetime` methods.
+- `LocaleValueFormatter` now supports `default_converter` and explicit fallback behavior.
+- A built-in no-op fallback converter is always available, so missing locale converters are deterministic.
+- Timezone normalization is now first-class with `TimezoneAwareLocaleValueConverter`.
+
+### Backward compatibility
+
+- Existing callable converters still work (`{"fa": lambda value: ...}`), via adapter.
+- Wrapper API (`wrapped_date`, `wrapped_datetime`, `grouped_number`, `enum_ref`) is unchanged.
+- Grouped number and enum behavior remains unchanged.
+
+### Recommended migration path
+
+1. Keep existing callables initially (no break).
+2. Move locale logic to protocol-based converter classes for stronger typing.
+3. Set `default_converter` to make fallback intent explicit.
+4. For timezone-sensitive locales, use `TimezoneAwareLocaleValueConverter` (or subclass/replace with your own converter).
 
 ---
 

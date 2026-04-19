@@ -1,17 +1,35 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, field
+from datetime import date, datetime, tzinfo
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from math import isfinite
-from typing import Any, Callable
+from typing import Callable, Mapping, Protocol, runtime_checkable
 
 from localization.exceptions import ValueFormattingError
 
 DateLike = date | datetime
-Converter = Callable[[DateLike], DateLike]
 NowProvider = Callable[[], datetime]
+
+
+@runtime_checkable
+class LocaleValueConverter(Protocol):
+    """Contract for locale-aware date/datetime conversion.
+
+    Converters are responsible for any locale-specific normalization before
+    string formatting, including timezone normalization for datetimes.
+    """
+
+    def convert_date(self, value: date, *, locale: str) -> date:
+        """Convert a date value for the requested locale."""
+
+    def convert_datetime(self, value: datetime, *, locale: str) -> datetime:
+        """Convert a datetime value for the requested locale."""
+
+
+LegacyConverter = Callable[[DateLike], DateLike]
+ConverterLike = LocaleValueConverter | LegacyConverter
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,26 +71,117 @@ class EnumReference:
         return str(self.item)
 
 
-@dataclass(slots=True)
-class LocaleValueFormatter:
-    """Formats explicitly wrapped placeholder values for a given locale."""
+@dataclass(frozen=True, slots=True)
+class IdentityLocaleValueConverter:
+    """Default no-op converter used when no locale/default converter exists."""
 
-    default_now: NowProvider
-    converters: dict[str, Converter] | None = None
-
-    def _convert(self, value: DateLike, locale: str) -> DateLike:
-        if self.converters and locale in self.converters:
-            return self.converters[locale](value)
+    def convert_date(self, value: date, *, locale: str) -> date:
         return value
 
+    def convert_datetime(self, value: datetime, *, locale: str) -> datetime:
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class CallableLocaleValueConverter:
+    """Adapter for legacy callable converters.
+
+    The same callable is used for both date and datetime conversion so existing
+    `converters={"fa": lambda value: ...}` usage remains supported.
+    """
+
+    func: LegacyConverter
+
+    def convert_date(self, value: date, *, locale: str) -> date:
+        converted = self.func(value)
+        if not isinstance(converted, date):
+            raise ValueFormattingError("Date converter must return date-compatible value for date input.")
+        return converted
+
+    def convert_datetime(self, value: datetime, *, locale: str) -> datetime:
+        converted = self.func(value)
+        if not isinstance(converted, datetime):
+            raise ValueFormattingError("Datetime converter must return datetime for datetime input.")
+        return converted
+
+
+@dataclass(frozen=True, slots=True)
+class TimezoneAwareLocaleValueConverter:
+    """Locale converter with explicit timezone normalization rules.
+
+    Rules:
+    - Aware datetimes are converted to `target_timezone` when provided.
+    - Naive datetimes are treated as:
+      - `assume_naive_source_timezone` when configured, then normalized.
+      - untouched when no source timezone is configured.
+    - Date values are returned unchanged by default.
+
+    This class intentionally handles timezone behavior only. Locale-specific
+    calendar conversion can be added by subclassing and overriding
+    `convert_date`/`convert_datetime`.
+    """
+
+    target_timezone: tzinfo | None = None
+    assume_naive_source_timezone: tzinfo | None = None
+
+    def convert_date(self, value: date, *, locale: str) -> date:
+        return value
+
+    def convert_datetime(self, value: datetime, *, locale: str) -> datetime:
+        normalized = value
+        if normalized.tzinfo is None and self.assume_naive_source_timezone is not None:
+            normalized = normalized.replace(tzinfo=self.assume_naive_source_timezone)
+
+        if self.target_timezone is None or normalized.tzinfo is None:
+            return normalized
+        return normalized.astimezone(self.target_timezone)
+
+
+@dataclass(slots=True)
+class LocaleValueFormatter:
+    """Formats explicitly wrapped placeholder values for a given locale.
+
+    Converter resolution order is explicit and predictable:
+    1. locale-specific converter in `converters`
+    2. `default_converter`
+    3. built-in no-op `IdentityLocaleValueConverter`
+    """
+
+    default_now: NowProvider
+    converters: Mapping[str, ConverterLike] | None = None
+    default_converter: ConverterLike | None = None
+    _resolved_converters: dict[str, LocaleValueConverter] = field(init=False, repr=False)
+    _resolved_default_converter: LocaleValueConverter = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._resolved_converters = {
+            locale: self._normalize_converter(converter)
+            for locale, converter in (self.converters or {}).items()
+        }
+        if self.default_converter is None:
+            self._resolved_default_converter = IdentityLocaleValueConverter()
+        else:
+            self._resolved_default_converter = self._normalize_converter(self.default_converter)
+
+    @staticmethod
+    def _normalize_converter(converter: ConverterLike) -> LocaleValueConverter:
+        if isinstance(converter, LocaleValueConverter):
+            return converter
+        if callable(converter):
+            return CallableLocaleValueConverter(converter)
+        raise ValueFormattingError("Invalid converter configuration. Expected converter object or callable.")
+
+    def _resolve_converter(self, locale: str) -> LocaleValueConverter:
+        return self._resolved_converters.get(locale, self._resolved_default_converter)
+
     def format_datetime(self, value: datetime, *, locale: str, pattern: str = "%Y/%m/%d %H:%M:%S") -> str:
-        converted = self._convert(value, locale)
+        converted = self._resolve_converter(locale).convert_datetime(value, locale=locale)
         if not isinstance(converted, datetime):
             raise ValueFormattingError("Datetime converter must return datetime for datetime input.")
         return converted.strftime(pattern)
 
     def format_date(self, value: date, *, locale: str, pattern: str = "%Y/%m/%d") -> str:
-        converted = self._convert(value, locale)
+        converted = self._resolve_converter(locale).convert_date(value, locale=locale)
         if not isinstance(converted, date):
             raise ValueFormattingError("Date converter must return date-compatible value for date input.")
         return converted.strftime(pattern)

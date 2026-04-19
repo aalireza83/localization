@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pytest
 
 from localization.editor import LocaleEditor
 from localization.exceptions import LocaleEditError, PlaceholderError, ValueFormattingError
-from localization.formatter import LocaleValueFormatter
+from localization.formatter import LocaleValueFormatter, TimezoneAwareLocaleValueConverter
 from localization.repository import LocaleRepository
 from localization.validator import LocaleValidator
 
@@ -103,3 +104,42 @@ def test_locale_value_formatter_grouped_number_rejects_invalid_values() -> None:
 
     with pytest.raises(ValueFormattingError):
         formatter.format_grouped_number("not-a-number")
+
+
+def test_locale_value_formatter_uses_default_converter_fallback() -> None:
+    value = datetime(2026, 4, 15, 12, 30, 0, tzinfo=timezone.utc)
+
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        converters={"fa": lambda dt: dt.replace(year=2000)},
+        default_converter=lambda dt: dt.replace(year=1999),
+    )
+
+    assert formatter.format_datetime(value, locale="de") == "1999/04/15 12:30:00"
+
+
+def test_timezone_converter_normalizes_aware_datetime() -> None:
+    value = datetime(2026, 4, 15, 9, 0, 0, tzinfo=timezone.utc)
+
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        converters={"fa": TimezoneAwareLocaleValueConverter(target_timezone=ZoneInfo("Asia/Tehran"))},
+    )
+
+    assert formatter.format_datetime(value, locale="fa", pattern="%Y/%m/%d %H:%M:%S %z") == "2026/04/15 12:30:00 +0330"
+
+
+def test_timezone_converter_handles_naive_datetime_with_assumed_source_timezone() -> None:
+    value = datetime(2026, 4, 15, 9, 0, 0)
+
+    formatter = LocaleValueFormatter(
+        default_now=lambda: value,
+        converters={
+            "fa": TimezoneAwareLocaleValueConverter(
+                target_timezone=ZoneInfo("Asia/Tehran"),
+                assume_naive_source_timezone=timezone.utc,
+            )
+        },
+    )
+
+    assert formatter.format_datetime(value, locale="fa", pattern="%Y/%m/%d %H:%M:%S %z") == "2026/04/15 12:30:00 +0330"
