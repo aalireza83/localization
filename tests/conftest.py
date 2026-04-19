@@ -17,50 +17,10 @@ def sample_i18n_files(tmp_path: Path) -> tuple[Path, Path]:
     manifest_path = tmp_path / "manifest.json"
 
     manifest = {
-        "default_locale": "en",
+        "default_locale": "fa",
         "locales": {
+            "fa": {"label": "Farsi", "native_name": "فارسی", "direction": "rtl"},
             "en": {"label": "English", "native_name": "English", "direction": "ltr"},
-            "fa": {"label": "فارسی", "native_name": "فارسی", "direction": "rtl"},
-        },
-    }
-
-    en = {
-        "_meta": {"locale": "en", "version": 1},
-        "messages": {
-            "user": {
-                "operation_failed": "Operation failed.",
-                "greeting": "Hello {name}",
-                "report": "Date {date}, datetime {dt}, amount {amount}, status {status}, raw {raw_date}",
-            }
-        },
-        "enums": {
-            "order_status": {
-                "title": "Order status",
-                "values": {
-                    "pending": {
-                        "label": "Pending payment",
-                        "description": "Awaiting payment",
-                        "order": 10,
-                    },
-                    "canceled": {
-                        "label": "Canceled",
-                        "order": 20
-                    }
-                },
-            }
-        },
-        "faqs": {
-            "payment": {
-                "title": "Payment questions",
-                "items": {
-                    "refund_time": {
-                        "question": "How long does a refund take?",
-                        "answer": "Refunds usually take 3 to 7 business days.",
-                        "order": 20,
-                        "tags": ["payment", "refund"],
-                    }
-                },
-            }
         },
     }
 
@@ -75,6 +35,7 @@ def sample_i18n_files(tmp_path: Path) -> tuple[Path, Path]:
         },
         "enums": {
             "order_status": {
+                "title": "وضعیت سفارش",
                 "values": {
                     "pending": {
                         "label": "در انتظار پرداخت",
@@ -82,6 +43,42 @@ def sample_i18n_files(tmp_path: Path) -> tuple[Path, Path]:
                     "canceled": {
                         "label": "لغو شده"
                     }
+                },
+            }
+        },
+        "faqs": {
+            "payment": {
+                "title": "سوالات پرداخت",
+                "items": {
+                    "refund_time": {
+                        "question": "بازپرداخت چقدر طول می‌کشد؟",
+                        "answer": "معمولاً بین ۳ تا ۷ روز کاری.",
+                    }
+                },
+            }
+        },
+    }
+
+    en = {
+        "_meta": {"locale": "en", "version": 1},
+        "messages": {
+            "user": {
+                "greeting": "Hello {name}",
+                "report": "Date {date}, datetime {dt}, amount {amount}, status {status}, raw {raw_date}",
+            }
+        },
+        "enums": {
+            "order_status": {
+                "values": {
+                    "pending": {
+                        "label": "Pending payment",
+                        "description": "Awaiting payment",
+                        "order": 10,
+                    },
+                    "canceled": {
+                        "label": "Canceled",
+                        "order": 20,
+                    },
                 }
             }
         },
@@ -89,8 +86,10 @@ def sample_i18n_files(tmp_path: Path) -> tuple[Path, Path]:
             "payment": {
                 "items": {
                     "refund_time": {
-                        "question": "بازپرداخت چقدر طول می‌کشد؟",
-                        "answer": "معمولاً بین ۳ تا ۷ روز کاری.",
+                        "question": "How long does a refund take?",
+                        "answer": "Refunds usually take 3 to 7 business days.",
+                        "order": 20,
+                        "tags": ["payment", "refund"],
                     }
                 }
             }
@@ -99,7 +98,7 @@ def sample_i18n_files(tmp_path: Path) -> tuple[Path, Path]:
 
     locales_dir.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    (locales_dir / "en.json").write_text(json.dumps(en, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (locales_dir / "fa.json").write_text(json.dumps(fa, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (locales_dir / "en.json").write_text(json.dumps(en, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     return locales_dir, manifest_path

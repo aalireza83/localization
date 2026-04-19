@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
 from string import Formatter
 from typing import Any
 
 from localization.exceptions import LocaleDataError, PlaceholderError
 from localization.repository import LocaleRepository
+
+_SIMPLE_PLACEHOLDER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class LocaleValidator:
@@ -55,7 +58,9 @@ class LocaleValidator:
             current_path = f"{path}.{key}"
             if isinstance(value, dict):
                 self._validate_messages(value, path=current_path)
-            elif not isinstance(value, str):
+            elif isinstance(value, str):
+                self._extract_placeholders(value, path=current_path)
+            else:
                 raise LocaleDataError(f"{current_path} must be a string.")
 
     def _validate_enums(self, node: Any, *, path: str) -> None:
@@ -140,8 +145,8 @@ class LocaleValidator:
             return
 
         if isinstance(base_node, str) and isinstance(target_node, str):
-            base_fields = self._extract_placeholders(base_node)
-            target_fields = self._extract_placeholders(target_node)
+            base_fields = self._extract_placeholders(base_node, path=path)
+            target_fields = self._extract_placeholders(target_node, path=path)
             if base_fields != target_fields:
                 raise PlaceholderError(
                     f"Placeholder mismatch at {path}: expected {sorted(base_fields)}, got {sorted(target_fields)}"
@@ -156,11 +161,15 @@ class LocaleValidator:
                     raise LocaleDataError(f"Missing key in locale: {path}.{key}")
                 self._ensure_complete_structure(value, target[key], path=f"{path}.{key}")
 
-    @staticmethod
-    def _extract_placeholders(template: str) -> set[str]:
+    def _extract_placeholders(self, template: str, *, path: str) -> set[str]:
         names: set[str] = set()
         for _, field_name, _, _ in Formatter().parse(template):
             if not field_name:
                 continue
-            names.add(field_name.split(".")[0].split("[")[0])
+            if not _SIMPLE_PLACEHOLDER.match(field_name):
+                raise PlaceholderError(
+                    f"Unsupported placeholder '{field_name}' at {path}. "
+                    "Only top-level identifiers are supported (e.g., {user_name})."
+                )
+            names.add(field_name)
         return names

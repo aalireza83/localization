@@ -13,23 +13,24 @@ def test_repository_loads_manifest_and_descriptors(sample_i18n_files: tuple[Path
     locales_dir, manifest_path = sample_i18n_files
     repository = LocaleRepository(base_dir=locales_dir, manifest_path=manifest_path)
 
-    assert repository.default_locale == "en"
+    assert repository.default_locale == "fa"
     descriptors = repository.get_locale_descriptors()
     assert descriptors["en"].direction == "ltr"
     assert descriptors["fa"].direction == "rtl"
 
 
-def test_repository_resolve_locale_fallbacks_to_default(sample_i18n_files: tuple[Path, Path]) -> None:
+def test_repository_resolve_locale_is_explicit(sample_i18n_files: tuple[Path, Path]) -> None:
     locales_dir, manifest_path = sample_i18n_files
     repository = LocaleRepository(base_dir=locales_dir, manifest_path=manifest_path)
 
-    assert repository.resolve_locale("unknown") == "en"
+    assert repository.resolve_locale(None) == "fa"
+    assert repository.resolve_locale("en") == "en"
 
     with pytest.raises(LocaleNotFoundError):
-        repository.resolve_locale("unknown", fallback_to_default=False)
+        repository.resolve_locale("unknown")
 
 
-def test_repository_rejects_invalid_manifest_default(tmp_path: Path) -> None:
+def test_repository_rejects_manifest_when_default_not_declared(tmp_path: Path) -> None:
     locales_dir = tmp_path / "locales"
     locales_dir.mkdir(parents=True, exist_ok=True)
 
@@ -66,3 +67,18 @@ def test_repository_raises_for_invalid_locale_json(tmp_path: Path) -> None:
 
     with pytest.raises(LocaleDataError):
         repository.load_locale("en")
+
+
+def test_repository_cache_can_be_cleared(sample_i18n_files: tuple[Path, Path]) -> None:
+    locales_dir, manifest_path = sample_i18n_files
+    repository = LocaleRepository(base_dir=locales_dir, manifest_path=manifest_path)
+
+    first = repository.load_locale("fa")
+    first["messages"]["user"]["greeting"] = "modified"
+
+    second = repository.load_locale("fa")
+    assert second["messages"]["user"]["greeting"] != "modified"
+
+    repository.clear_cache()
+    third = repository.load_locale("fa")
+    assert third["messages"]["user"]["greeting"] == "سلام {name}"
