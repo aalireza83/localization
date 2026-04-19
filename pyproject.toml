@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localization"
+version = "0.1.0"
+description = "Small explicit JSON-file localization library"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "localization maintainers"}]
+license = {text = "Proprietary"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -31,77 +31,68 @@ class I18nService:
 
     def msg(self, key: str, *, locale: str | None = None, **kwargs: Any) -> str:
         path = f"messages.{key}"
-        template = self._get_with_fallback(path, locale=locale)
-
-        if template is None:
-            if self.strict_missing_keys:
-                raise MissingTranslationError(f"Message key not found: {path}")
-            return key
-        if not isinstance(template, str):
-            raise LocaleDataError(f"Expected string at '{path}', got {type(template).__name__}.")
-
         resolved_locale = self.repository.resolve_locale(locale)
+        template = self._get_required_string(path, locale=resolved_locale)
+
         context = {**self.default_context_provider(), **kwargs}
         self._ensure_template_context(template, context, path=path)
         formatted_context = self._resolve_wrapped_values(context, locale=resolved_locale)
         return template.format(**formatted_context)
 
     def enum_group(self, enum_name: str, *, locale: str | None = None) -> dict[str, Any]:
-        return self._require_object(
-            self._get_merged_with_fallback(f"enums.{enum_name}", locale=locale),
-            f"enums.{enum_name}",
-        )
+        path = f"enums.{enum_name}"
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_object(path, locale=resolved_locale)
 
     def enum_values(self, enum_name: str, *, locale: str | None = None) -> dict[str, dict[str, Any]]:
-        group = self.enum_group(enum_name, locale=locale)
-        return self._require_object(group.get("values"), f"enums.{enum_name}.values")
+        path = f"enums.{enum_name}.values"
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_object(path, locale=resolved_locale)
 
     def enum_item(self, enum_name: str, item_key: str, *, locale: str | None = None) -> dict[str, Any]:
         path = f"enums.{enum_name}.values.{item_key}"
-        return self._require_object(self._get_merged_with_fallback(path, locale=locale), path)
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_object(path, locale=resolved_locale)
 
     def enum_label(self, enum_name: str, item_key: str, *, locale: str | None = None) -> str:
         path = f"enums.{enum_name}.values.{item_key}.label"
-        label = self._get_merged_with_fallback(path, locale=locale)
-        if not isinstance(label, str):
-            raise LocaleDataError(f"Expected string at '{path}'.")
-        return label
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_string(path, locale=resolved_locale)
 
     def faq_section(self, section_key: str, *, locale: str | None = None) -> dict[str, Any]:
         path = f"faqs.{section_key}"
-        return self._require_object(self._get_merged_with_fallback(path, locale=locale), path)
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_object(path, locale=resolved_locale)
 
     def faq_items(self, section_key: str, *, locale: str | None = None) -> list[dict[str, Any]]:
-        items = self._require_object(self.faq_section(section_key, locale=locale).get("items"), f"faqs.{section_key}.items")
+        path = f"faqs.{section_key}.items"
+        resolved_locale = self.repository.resolve_locale(locale)
+        items = self._get_required_object(path, locale=resolved_locale)
+
         normalized: list[dict[str, Any]] = []
         for key, value in items.items():
-            if isinstance(value, dict):
-                normalized.append({"id": key, **value})
+            if not isinstance(value, dict):
+                raise LocaleDataError(f"Expected object at '{path}.{key}', got {type(value).__name__}.")
+            normalized.append({"id": key, **value})
         return sorted(normalized, key=lambda item: item.get("order", 2_147_483_647))
 
     def faq_item(self, section_key: str, item_key: str, *, locale: str | None = None) -> dict[str, Any]:
         path = f"faqs.{section_key}.items.{item_key}"
-        return self._require_object(self._get_merged_with_fallback(path, locale=locale), path)
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_object(path, locale=resolved_locale)
 
     def faq_answer(self, section_key: str, item_key: str, *, locale: str | None = None) -> str:
         path = f"faqs.{section_key}.items.{item_key}.answer"
-        answer = self._get_merged_with_fallback(path, locale=locale)
-        if not isinstance(answer, str):
-            raise LocaleDataError(f"Expected string at '{path}'.")
-        return answer
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_string(path, locale=resolved_locale)
 
     def faq_question(self, section_key: str, item_key: str, *, locale: str | None = None) -> str:
         path = f"faqs.{section_key}.items.{item_key}.question"
-        question = self._get_merged_with_fallback(path, locale=locale)
-        if not isinstance(question, str):
-            raise LocaleDataError(f"Expected string at '{path}'.")
-        return question
+        resolved_locale = self.repository.resolve_locale(locale)
+        return self._get_required_string(path, locale=resolved_locale)
 
     def _resolve_wrapped_values(self, context: dict[str, Any], *, locale: str) -> dict[str, Any]:
-        resolved: dict[str, Any] = {}
-        for key, value in context.items():
-            resolved[key] = self._resolve_wrapped_value(value, locale=locale)
-        return resolved
+        return {key: self._resolve_wrapped_value(value, locale=locale) for key, value in context.items()}
 
     def _resolve_wrapped_value(self, value: Any, *, locale: str) -> Any:
         if isinstance(value, LocalizedDateTime):
@@ -114,52 +105,61 @@ class I18nService:
             return self.enum_label(value.enum_name, value.item_key(), locale=locale)
         return value
 
-    def _get_with_fallback(self, path: str, *, locale: str | None) -> Any | None:
-        resolved = self.repository.resolve_locale(locale)
-        current = get_path(self.repository.load_locale(resolved), path)
-        if current is not None or resolved == self.repository.default_locale:
-            return current
-        return get_path(self.repository.load_locale(self.repository.default_locale), path)
+    def _effective_locale_data(self, locale: str) -> dict[str, Any]:
+        default_data = self.repository.load_locale(self.repository.default_locale)
+        if locale == self.repository.default_locale:
+            return default_data
 
-    def _get_merged_with_fallback(self, path: str, *, locale: str | None) -> Any | None:
-        resolved = self.repository.resolve_locale(locale)
-        base = get_path(self.repository.load_locale(self.repository.default_locale), path)
-        if resolved == self.repository.default_locale:
-            return deepcopy(base)
+        requested_data = self.repository.load_locale(locale)
+        return self._deep_merge(default_data, requested_data)
 
-        current = get_path(self.repository.load_locale(resolved), path)
-        if current is None:
-            return deepcopy(base)
-        if isinstance(base, dict) and isinstance(current, dict):
-            return self._deep_merge(base, current)
-        return deepcopy(current)
+    def _get_from_effective(self, path: str, *, locale: str) -> Any | None:
+        return get_path(self._effective_locale_data(locale), path)
 
-    def _require_object(self, value: Any | None, path: str) -> dict[str, Any]:
+    def _get_required_string(self, path: str, *, locale: str) -> str:
+        value = self._get_from_effective(path, locale=locale)
         if value is None:
-            if self.strict_missing_keys:
-                raise MissingTranslationError(f"Translation key not found: {path}")
-            return {}
+            if path.startswith("messages.") and not self.strict_missing_keys:
+                return path.removeprefix("messages.")
+            raise MissingTranslationError(f"Translation key not found: {path}")
+        if not isinstance(value, str):
+            raise LocaleDataError(f"Expected string at '{path}', got {type(value).__name__}.")
+        return value
+
+    def _get_required_object(self, path: str, *, locale: str) -> dict[str, Any]:
+        value = self._get_from_effective(path, locale=locale)
+        if value is None:
+            raise MissingTranslationError(f"Translation key not found: {path}")
         if not isinstance(value, dict):
             raise LocaleDataError(f"Expected object at '{path}', got {type(value).__name__}.")
         return value
 
     def _deep_merge(self, base: Any, override: Any) -> Any:
-        if not isinstance(base, dict) or not isinstance(override, dict):
+        if isinstance(base, dict) and isinstance(override, dict):
+            result: dict[str, Any] = {key: deepcopy(value) for key, value in base.items()}
+            for key, value in override.items():
+                if key in result:
+                    result[key] = self._deep_merge(result[key], value)
+                else:
+                    result[key] = deepcopy(value)
+            return result
+
+        if isinstance(override, list):
             return deepcopy(override)
-        result = deepcopy(base)
-        for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self._deep_merge(result[key], value)
-            else:
-                result[key] = deepcopy(value)
-        return result
+
+        return deepcopy(override)
 
     @staticmethod
     def _ensure_template_context(template: str, context: dict[str, Any], *, path: str) -> None:
         required: set[str] = set()
         for _, field_name, _, _ in Formatter().parse(template):
-            if field_name:
-                required.add(field_name.split(".")[0].split("[")[0])
+            if not field_name:
+                continue
+            if not field_name.isidentifier():
+                raise PlaceholderError(
+                    f"Unsupported placeholder '{field_name}' in '{path}'. Only top-level identifiers are supported."
+                )
+            required.add(field_name)
 
         missing = sorted(required - set(context))
         if missing:

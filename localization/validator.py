@@ -55,7 +55,9 @@ class LocaleValidator:
             current_path = f"{path}.{key}"
             if isinstance(value, dict):
                 self._validate_messages(value, path=current_path)
-            elif not isinstance(value, str):
+            elif isinstance(value, str):
+                self._extract_top_level_placeholders(value, path=current_path)
+            else:
                 raise LocaleDataError(f"{current_path} must be a string.")
 
     def _validate_enums(self, node: Any, *, path: str) -> None:
@@ -140,8 +142,8 @@ class LocaleValidator:
             return
 
         if isinstance(base_node, str) and isinstance(target_node, str):
-            base_fields = self._extract_placeholders(base_node)
-            target_fields = self._extract_placeholders(target_node)
+            base_fields = self._extract_top_level_placeholders(base_node, path=f"{path} (default)")
+            target_fields = self._extract_top_level_placeholders(target_node, path=f"{path} ({self.repository.default_locale} overlay)")
             if base_fields != target_fields:
                 raise PlaceholderError(
                     f"Placeholder mismatch at {path}: expected {sorted(base_fields)}, got {sorted(target_fields)}"
@@ -157,10 +159,14 @@ class LocaleValidator:
                 self._ensure_complete_structure(value, target[key], path=f"{path}.{key}")
 
     @staticmethod
-    def _extract_placeholders(template: str) -> set[str]:
+    def _extract_top_level_placeholders(template: str, *, path: str) -> set[str]:
         names: set[str] = set()
         for _, field_name, _, _ in Formatter().parse(template):
             if not field_name:
                 continue
-            names.add(field_name.split(".")[0].split("[")[0])
+            if not field_name.isidentifier():
+                raise PlaceholderError(
+                    f"Unsupported placeholder '{field_name}' at {path}. Only top-level identifiers are supported."
+                )
+            names.add(field_name)
         return names
