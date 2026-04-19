@@ -23,7 +23,7 @@ class LocaleEditor:
 
     def set_value(self, locale: str, path: str, value: Any) -> None:
         self._ensure_editable(path)
-        resolved = self.repository.resolve_locale(locale, fallback_to_default=False)
+        resolved = self.repository.resolve_locale(locale)
         data = self.repository.load_locale(resolved)
 
         try:
@@ -36,12 +36,12 @@ class LocaleEditor:
 
     def delete_value(self, locale: str, path: str) -> None:
         self._ensure_editable(path)
-        resolved = self.repository.resolve_locale(locale, fallback_to_default=False)
+        resolved = self.repository.resolve_locale(locale)
         data = self.repository.load_locale(resolved)
 
         deleted = delete_path(data, path)
         if not deleted:
-            return
+            raise LocaleEditError(f"Path not found: {path}")
 
         self.validator.validate_single_locale_data(resolved, data)
         self.repository.save_locale(resolved, data)

@@ -1,16 +1,16 @@
 # localization
 
-A production-focused Python localization package for loading, validating, querying, and editing JSON locale files.
+Small, explicit, production-oriented Python localization for JSON files.
 
-## Features
+It focuses on a clear runtime:
 
-- Manifest-based locale discovery
-- Message lookup with fallback
-- Structured translation lookup (`enums`, `faqs`)
-- Explicit wrapper-based placeholder formatting
-- Validation of locale schemas and placeholder compatibility
-- Safe path-based locale editing
-- Locale-aware date/datetime formatting through pluggable converters
+- load locale JSON from disk
+- validate locale schema and placeholders
+- query messages / enums / FAQs
+- edit locale files safely
+- format wrapped values explicitly (dates, datetimes, numbers, enum references)
+
+No hidden magic, no large framework abstractions.
 
 ---
 
@@ -20,7 +20,7 @@ A production-focused Python localization package for loading, validating, queryi
 
 ---
 
-## Expected layout
+## Expected file layout
 
 ```text
 project/
@@ -34,7 +34,7 @@ project/
 
 ```json
 {
-  "default_locale": "en",
+  "default_locale": "fa",
   "locales": {
     "en": {"label": "English", "native_name": "English", "direction": "ltr"},
     "fa": {"label": "فارسی", "native_name": "فارسی", "direction": "rtl"}
@@ -42,141 +42,259 @@ project/
 }
 ```
 
-> `default_locale` is enforced as `en`.
+Notes:
 
-### Locale schema
-
-```json
-{
-  "_meta": {"locale": "en", "version": 1},
-  "messages": {
-    "user": {
-      "greeting": "Hello {name}",
-      "report": "Date {date}, datetime {dt}, amount {amount}, status {status}, raw {raw_date}"
-    }
-  },
-  "enums": {
-    "order_status": {
-      "title": "Order status",
-      "values": {
-        "pending": {"label": "Pending payment", "description": "Awaiting payment", "order": 10}
-      }
-    }
-  },
-  "faqs": {
-    "payment": {
-      "title": "Payment questions",
-      "items": {
-        "refund_time": {
-          "question": "How long does a refund take?",
-          "answer": "Refunds usually take 3 to 7 business days.",
-          "order": 20,
-          "tags": ["payment", "refund"]
-        }
-      }
-    }
-  }
-}
-```
+- `default_locale` can be **any** declared locale.
+- `locales` must be non-empty.
+- unknown locale codes raise `LocaleNotFoundError`.
 
 ---
 
-## Quick start
+## High-level design
+
+### Explicit formatting philosophy
+
+Only wrapped values are specially formatted:
+
+- `wrapped_date(...)`
+- `wrapped_datetime(...)`
+- `grouped_number(...)`
+- `enum_ref(...)`
+
+Raw values are passed through normally.
+
+### Locale overlay model (single fallback rule)
+
+For non-default locales, runtime reads from an **effective locale view**:
+
+`effective = deep_merge(default_locale_data, requested_locale_data)`
+
+Merge rules:
+
+- dicts merge recursively
+- scalars in requested locale override default values
+- lists in requested locale replace default lists
+
+The same model is used for:
+
+- `msg`
+- enum lookups
+- FAQ lookups
+
+---
+
+## Placeholder limitation (intentional)
+
+Only top-level placeholder names are supported.
+
+Supported:
+
+- `{name}`
+- `{user_name}`
+- `{amount2}`
+
+Not supported:
+
+- `{user.name}`
+- `{items[0]}`
+- `{user[name]}`
+
+Unsupported placeholder forms raise `PlaceholderError` in validation/runtime.
+
+---
+
+## Runtime architecture
+
+### 1) `LocaleRepository`
+
+- reads manifest + locale files
+- validates manifest shape
+- resolves locale codes
+- `None` locale resolves to configured default locale
+- unknown locale raises `LocaleNotFoundError`
+
+### 2) `LocaleValidator`
+
+- validates per-locale JSON schema
+- validates placeholders
+- validates placeholder compatibility against default locale for shared message keys
+
+### 3) `I18nService`
+
+- high-level message + enum + FAQ APIs
+- applies the uniform locale overlay model
+- resolves wrapped values with `LocaleValueFormatter`
+
+### 4) `LocaleEditor`
+
+- safe path-based set/delete
+- rejects protected paths (`_meta`)
+- validates before saving
+- delete on missing path raises `LocaleEditError`
+
+### 5) `LocaleValueFormatter`
+
+Two-stage temporal pipeline:
+
+1. timezone normalization (`datetime`)
+2. locale renderer converts to final `str`
+
+---
+
+## Error semantics
+
+- `LocaleNotFoundError`: unknown locale or missing locale file
+- `ManifestError`: invalid manifest
+- `MissingTranslationError`: missing path/value after fallback overlay
+- `LocaleDataError`: malformed data/type mismatch
+- `PlaceholderError`: invalid/missing placeholders
+- `LocaleEditError`: unsafe or invalid edit operation
+- `ValueFormattingError`: invalid wrapped value formatting input
+
+---
+
+## Formatter API (preferred)
+
+### Renderer contract
 
 ```python
-from localization import LocaleValueFormatter, build_i18n_runtime
+from datetime import date, datetime
+from localization import LocaleRenderer
 
-formatter = LocaleValueFormatter(
-    default_now=lambda: ...,  # callable returning datetime
-    converters={"fa": lambda value: value},
-)
+class MyRenderer(LocaleRenderer):
+    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
+        return value.strftime(pattern or "%Y/%m/%d")
+
+    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
+        return value.strftime(pattern or "%Y/%m/%d %H:%M:%S")
+```
+
+### Timezone resolution
+
+For `datetime` formatting:
+
+1. `locale_timezones[locale]`
+2. `default_timezone`
+3. UTC
+
+### Naive datetime behavior
+
+- if `naive_input_timezone` is not set: naive datetime remains naive (no timezone conversion)
+- if set: naive datetime is treated as that source timezone, then normalized to target timezone
+
+---
+
+## Usage examples
+
+### Build runtime with non-English default locale
+
+```python
+from localization import build_i18n_runtime
 
 repo, validator, i18n, editor = build_i18n_runtime(
     base_dir="./locales",
     manifest_path="./manifest.json",
-    value_formatter=formatter,
 )
 
-validator.validate_all()
-print(i18n.msg("user.greeting", locale="fa", name="Sara"))
+print(repo.default_locale)  # e.g. "fa"
 ```
 
----
-
-## Placeholder wrapper behavior (important)
-
-Formatting is **explicit** and **opt-in**.
-
-- Raw values are never auto-formatted.
-- Wrapped values are formatted/resolved using the locale from `i18n.msg(..., locale=...)`.
-- Caller does **not** pass locale into each wrapped value.
-
-### Supported wrappers
-
-- `wrapped_date(date_value)`
-- `wrapped_datetime(datetime_value)`
-- `grouped_number(number_or_numeric_string)`
-- `enum_ref(enum_name, item_key_or_enum_member)`
-
-### Example
+### Unknown locale raises
 
 ```python
-from datetime import date, datetime
-from enum import Enum
+from localization.exceptions import LocaleNotFoundError
 
+try:
+    i18n.msg("user.greeting", locale="unknown", name="Ali")
+except LocaleNotFoundError:
+    ...
+```
+
+### Message lookup
+
+```python
+text = i18n.msg("user.greeting", locale="fa", name="Sara")
+```
+
+### Enum lookup
+
+```python
+label = i18n.enum_label("order_status", "pending", locale="fa")
+```
+
+### FAQ lookup
+
+```python
+answer = i18n.faq_answer("payment", "refund_time", locale="fa")
+```
+
+### Wrapped datetime + grouped number + enum ref
+
+```python
+from datetime import date, datetime, timezone
 from localization import enum_ref, grouped_number, wrapped_date, wrapped_datetime
-
-class OrderStatus(Enum):
-    PENDING = "pending"
 
 text = i18n.msg(
     "user.report",
     locale="fa",
     date=wrapped_date(date(2026, 4, 17)),
-    dt=wrapped_datetime(datetime(2026, 4, 17, 8, 45, 0)),
+    dt=wrapped_datetime(datetime(2026, 4, 17, 8, 45, 0, tzinfo=timezone.utc)),
     amount=grouped_number("1234567"),
-    status=enum_ref("order_status", OrderStatus.PENDING),
+    status=enum_ref("order_status", "pending"),
     raw_date=date(2026, 4, 17),
 )
 ```
 
-In the output:
+### Locale-specific renderer + timezone (Persian-style output)
 
-- wrapped values are localized
-- `raw_date` remains a raw Python value (`str(date)` behavior)
+```python
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
+from localization import LocaleRenderer, LocaleValueFormatter
 
-### Number formatting rules
+class PersianRenderer(LocaleRenderer):
+    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
+        return f"jalali({value.year}-{value.month:02d}-{value.day:02d})"
 
-- only `grouped_number(...)` values are grouped
-- raw `int`/`float` values remain unchanged
-- numeric values and numeric strings are supported
-- grouping style is simple comma grouping (`1,234,567`)
-- invalid wrapped numeric input raises `ValueFormattingError`
+    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
+        return f"jalali({value.year}-{value.month:02d}-{value.day:02d} {value.hour:02d}:{value.minute:02d}:{value.second:02d})"
 
-### Enum wrapper rules
+formatter = LocaleValueFormatter(
+    default_now=lambda: datetime.now(timezone.utc),
+    locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
+    default_timezone=timezone.utc,
+    renderers={"fa": PersianRenderer()},
+)
+```
 
-- labels are loaded from locale files via `i18n.enum_label(...)`
-- no hardcoded labels in Python
-- if wrapper receives a Python `Enum` member:
-  - use its `value` when it is a non-empty string
-  - otherwise use `name.lower()`
+### Editor set/delete
+
+```python
+editor.set_value("fa", "messages.user.greeting", "سلام {name}")
+editor.delete_value("fa", "faqs.payment.items.refund_time")
+```
+
+If delete path does not exist, `LocaleEditError` is raised.
 
 ---
 
-## Public API overview
+## Public API reference
 
-### Runtime builders
+### Runtime
 
 - `build_i18n_runtime(...)`
 - `build_runtime(...)`
+- `I18nRuntime`
 
-### Core classes
+### Core components
 
 - `LocaleRepository`
 - `LocaleValidator`
 - `I18nService`
 - `LocaleEditor`
 - `LocaleValueFormatter`
+- `LocaleRenderer`
+- `StrftimeRenderer`
 
 ### Wrapper helpers
 
@@ -185,33 +303,14 @@ In the output:
 - `grouped_number`
 - `enum_ref`
 
----
+### Wrapper dataclasses
 
-## Validation behavior
+- `LocalizedDate`
+- `LocalizedDateTime`
+- `GroupedNumber`
+- `EnumReference`
 
-`LocaleValidator` checks:
-
-1. Required root sections (`_meta`, `messages`, `enums`, `faqs`)
-2. `_meta.locale` and `_meta.version`
-3. Message/enum/faq structures and field types
-4. Placeholder compatibility against `en` for overlapping message keys
-5. Optional complete-structure parity (`require_complete_locales=True`)
-
----
-
-## Editing locale files
-
-```python
-editor.set_value("fa", "messages.user.greeting", "سلام {name}")
-editor.delete_value("fa", "faqs.payment.items.refund_time")
-```
-
-- `_meta` paths are protected
-- edits are validated before writing
-
----
-
-## Exceptions
+### Exceptions
 
 - `I18nError`
 - `ManifestError`
@@ -222,14 +321,9 @@ editor.delete_value("fa", "faqs.payment.items.refund_time")
 - `ValueFormattingError`
 - `LocaleEditError`
 
-Backward-compatible aliases:
-
-- `TranslationValidationError`
-- `TranslationKeyNotFoundError`
-
 ---
 
 ## Example and tests
 
-- Example: `examples/basic_usage.py`
+- Example script: `examples/basic_usage.py`
 - Run tests: `pytest -q`
