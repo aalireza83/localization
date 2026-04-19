@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pytest
 
 from localization.editor import LocaleEditor
 from localization.exceptions import LocaleEditError, PlaceholderError, ValueFormattingError
-from localization.formatter import LocaleValueFormatter
+from localization.formatter import LocaleValueFormatter, NaiveDatetimePolicy, TimezoneAwareLocaleConverter
 from localization.repository import LocaleRepository
 from localization.validator import LocaleValidator
 
@@ -89,6 +90,26 @@ def test_locale_value_formatter_uses_converter() -> None:
 
     assert formatter.format_date(value.date(), locale="en") == "2026/04/15"
     assert formatter.format_datetime(value, locale="fa") == "2000/04/15 12:30:00"
+
+
+def test_locale_value_formatter_uses_default_converter_fallback() -> None:
+    formatter = LocaleValueFormatter(
+        default_now=lambda: datetime(2026, 4, 15, 12, 30, 0, tzinfo=timezone.utc),
+        default_converter=TimezoneAwareLocaleConverter(target_timezone=ZoneInfo("Asia/Tehran")),
+    )
+
+    assert formatter.format_datetime(datetime(2026, 4, 15, 12, 30, 0, tzinfo=timezone.utc), locale="de") == "2026/04/15 16:00:00"
+
+
+def test_timezone_converter_handles_naive_with_explicit_source_timezone() -> None:
+    converter = TimezoneAwareLocaleConverter(
+        target_timezone=ZoneInfo("Asia/Tehran"),
+        naive_policy=NaiveDatetimePolicy.ASSUME_SOURCE_TIMEZONE,
+        source_timezone=timezone.utc,
+    )
+    formatter = LocaleValueFormatter(default_now=lambda: datetime(2026, 4, 15, 12, 30, 0), converters={"fa": converter})
+
+    assert formatter.format_datetime(datetime(2026, 4, 15, 12, 30, 0), locale="fa") == "2026/04/15 16:00:00"
 
 
 def test_locale_value_formatter_grouped_number() -> None:

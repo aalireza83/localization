@@ -10,7 +10,8 @@ A production-focused Python localization package for loading, validating, queryi
 - Explicit wrapper-based placeholder formatting
 - Validation of locale schemas and placeholder compatibility
 - Safe path-based locale editing
-- Locale-aware date/datetime formatting through pluggable converters
+- Locale-aware date/datetime formatting through strongly-typed per-locale converters
+- Explicit default converter fallback for unknown locales
 
 ---
 
@@ -44,61 +45,71 @@ project/
 
 > `default_locale` is enforced as `en`.
 
-### Locale schema
-
-```json
-{
-  "_meta": {"locale": "en", "version": 1},
-  "messages": {
-    "user": {
-      "greeting": "Hello {name}",
-      "report": "Date {date}, datetime {dt}, amount {amount}, status {status}, raw {raw_date}"
-    }
-  },
-  "enums": {
-    "order_status": {
-      "title": "Order status",
-      "values": {
-        "pending": {"label": "Pending payment", "description": "Awaiting payment", "order": 10}
-      }
-    }
-  },
-  "faqs": {
-    "payment": {
-      "title": "Payment questions",
-      "items": {
-        "refund_time": {
-          "question": "How long does a refund take?",
-          "answer": "Refunds usually take 3 to 7 business days.",
-          "order": 20,
-          "tags": ["payment", "refund"]
-        }
-      }
-    }
-  }
-}
-```
-
 ---
 
-## Quick start
+## Date/datetime converter architecture
+
+### Converter contract
+
+`LocaleValueFormatter` uses a converter object implementing:
+
+- `convert_date(value: date) -> date`
+- `convert_datetime(value: datetime) -> datetime`
+
+Use either:
+
+- `LocaleDateTimeConverter` implementations (recommended), or
+- legacy callables (`Callable[[date | datetime], date | datetime]`) for backward compatibility.
+
+### Converter resolution order
+
+For each formatting call, resolution is explicit and deterministic:
+
+1. converter registered in `converters[locale]`
+2. `default_converter`
+3. built-in no-op identity converter
+
+This ensures unknown locales still behave predictably.
+
+### Timezone support and naive datetime policy
+
+`TimezoneAwareLocaleConverter` provides explicit timezone normalization:
+
+- aware datetime + `target_timezone` → converted via `.astimezone(...)`
+- naive datetime behavior is controlled by `NaiveDatetimePolicy`:
+  - `ASSUME_UTC` (default)
+  - `ASSUME_SOURCE_TIMEZONE` (requires `source_timezone`)
+  - `KEEP_NAIVE`
+
+This keeps datetime conversion safe and non-magical.
+
+### Example: per-locale + default fallback
 
 ```python
-from localization import LocaleValueFormatter, build_i18n_runtime
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+from localization import (
+    LocaleValueFormatter,
+    NaiveDatetimePolicy,
+    TimezoneAwareLocaleConverter,
+)
 
 formatter = LocaleValueFormatter(
-    default_now=lambda: ...,  # callable returning datetime
-    converters={"fa": lambda value: value},
+    default_now=lambda: datetime.now(UTC),
+    converters={
+        # Farsi: normalize datetimes to Tehran
+        "fa": TimezoneAwareLocaleConverter(
+            target_timezone=ZoneInfo("Asia/Tehran"),
+            naive_policy=NaiveDatetimePolicy.ASSUME_SOURCE_TIMEZONE,
+            source_timezone=UTC,
+        ),
+        # English: keep UTC semantics explicitly
+        "en": TimezoneAwareLocaleConverter(target_timezone=UTC),
+    },
+    # fallback for locales without explicit registration
+    default_converter=TimezoneAwareLocaleConverter(target_timezone=UTC),
 )
-
-repo, validator, i18n, editor = build_i18n_runtime(
-    base_dir="./locales",
-    manifest_path="./manifest.json",
-    value_formatter=formatter,
-)
-
-validator.validate_all()
-print(i18n.msg("user.greeting", locale="fa", name="Sara"))
 ```
 
 ---
@@ -110,6 +121,7 @@ Formatting is **explicit** and **opt-in**.
 - Raw values are never auto-formatted.
 - Wrapped values are formatted/resolved using the locale from `i18n.msg(..., locale=...)`.
 - Caller does **not** pass locale into each wrapped value.
+- `wrapped_date(...)` and `wrapped_datetime(...)` always route through converter resolution.
 
 ### Supported wrappers
 
@@ -145,7 +157,11 @@ In the output:
 - wrapped values are localized
 - `raw_date` remains a raw Python value (`str(date)` behavior)
 
-### Number formatting rules
+---
+
+## Number formatting rules
+
+Grouped number formatting remains in `formatter.py` because it is part of explicit wrapper-based placeholder value formatting.
 
 - only `grouped_number(...)` values are grouped
 - raw `int`/`float` values remain unchanged
@@ -153,7 +169,9 @@ In the output:
 - grouping style is simple comma grouping (`1,234,567`)
 - invalid wrapped numeric input raises `ValueFormattingError`
 
-### Enum wrapper rules
+---
+
+## Enum wrapper rules
 
 - labels are loaded from locale files via `i18n.enum_label(...)`
 - no hardcoded labels in Python
@@ -177,6 +195,14 @@ In the output:
 - `I18nService`
 - `LocaleEditor`
 - `LocaleValueFormatter`
+
+### Converter types
+
+- `LocaleDateTimeConverter` (protocol)
+- `IdentityLocaleConverter`
+- `CallableLocaleConverter` (legacy callable adapter)
+- `TimezoneAwareLocaleConverter`
+- `NaiveDatetimePolicy`
 
 ### Wrapper helpers
 
@@ -226,6 +252,29 @@ Backward-compatible aliases:
 
 - `TranslationValidationError`
 - `TranslationKeyNotFoundError`
+
+---
+
+## Migration notes
+
+### What changed
+
+- Date/datetime conversion now uses a formal converter protocol (`LocaleDateTimeConverter`).
+- `LocaleValueFormatter` now supports `default_converter` fallback.
+- The default fallback when no converter is configured is an explicit no-op identity converter.
+- Built-in timezone conversion support is available via `TimezoneAwareLocaleConverter`.
+
+### Backward compatibility
+
+- Existing callable-based converters still work.
+- They are automatically wrapped by `CallableLocaleConverter`.
+- No changes are required for existing wrapper helpers (`wrapped_date`, `wrapped_datetime`, `grouped_number`, `enum_ref`).
+
+### Behavior clarifications
+
+- Wrappers always use converter resolution; they never bypass converters.
+- Naive datetime behavior is explicit through `NaiveDatetimePolicy`.
+- `ASSUME_SOURCE_TIMEZONE` without `source_timezone` raises `ValueFormattingError`.
 
 ---
 
