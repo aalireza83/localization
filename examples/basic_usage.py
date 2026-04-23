@@ -6,16 +6,34 @@ from datetime import date, datetime, timezone
 from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from localization import LocaleValueFormatter, build_i18n_runtime, enum_ref, grouped_number, wrapped_date, wrapped_datetime
+from localization import (  # noqa: E402
+    LocaleRenderer,
+    LocaleValueFormatter,
+    build_i18n_runtime,
+    enum_ref,
+    grouped_number,
+    wrapped_date,
+    wrapped_datetime,
+)
 
 
 class OrderStatus(Enum):
     PENDING = "pending"
+
+
+class PersianRenderer(LocaleRenderer):
+    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
+        # Replace this with a real Jalali/Shamsi conversion if needed.
+        return f"jalali({value.year}-{value.month:02d}-{value.day:02d})"
+
+    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
+        return f"jalali({value.year}-{value.month:02d}-{value.day:02d} {value.hour:02d}:{value.minute:02d}:{value.second:02d})"
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -30,46 +48,10 @@ def main() -> None:
         manifest_path = root / "manifest.json"
 
         manifest = {
-            "default_locale": "en",
+            "default_locale": "fa",
             "locales": {
+                "fa": {"label": "Farsi", "native_name": "فارسی", "direction": "rtl"},
                 "en": {"label": "English", "native_name": "English", "direction": "ltr"},
-                "fa": {"label": "فارسی", "native_name": "فارسی", "direction": "rtl"},
-            },
-        }
-
-        en = {
-            "_meta": {"locale": "en", "version": 1},
-            "messages": {
-                "user": {
-                    "operation_failed": "Operation failed.",
-                    "greeting": "Hello {name}",
-                    "report": "Date {date}, datetime {dt}, amount {amount}, status {status}, raw {raw_date}",
-                }
-            },
-            "enums": {
-                "order_status": {
-                    "title": "Order status",
-                    "values": {
-                        "pending": {
-                            "label": "Pending payment",
-                            "description": "Awaiting payment",
-                            "order": 10,
-                        }
-                    },
-                }
-            },
-            "faqs": {
-                "payment": {
-                    "title": "Payment questions",
-                    "items": {
-                        "refund_time": {
-                            "question": "How long does a refund take?",
-                            "answer": "Refunds usually take 3 to 7 business days.",
-                            "order": 20,
-                            "tags": ["payment", "refund"],
-                        }
-                    },
-                }
             },
         }
 
@@ -103,13 +85,44 @@ def main() -> None:
             },
         }
 
+        en = {
+            "_meta": {"locale": "en", "version": 1},
+            "messages": {
+                "user": {
+                    "greeting": "Hello {name}",
+                    "report": "Date {date}, datetime {dt}, amount {amount}, status {status}, raw {raw_date}",
+                }
+            },
+            "enums": {
+                "order_status": {
+                    "values": {
+                        "pending": {
+                            "label": "Pending payment",
+                            "description": "Awaiting payment",
+                        }
+                    }
+                }
+            },
+            "faqs": {
+                "payment": {
+                    "items": {
+                        "refund_time": {
+                            "question": "How long does a refund take?",
+                            "answer": "Refunds usually take 3 to 7 business days.",
+                        }
+                    }
+                }
+            },
+        }
+
         _write_json(manifest_path, manifest)
-        _write_json(locales / "en.json", en)
         _write_json(locales / "fa.json", fa)
+        _write_json(locales / "en.json", en)
 
         formatter = LocaleValueFormatter(
             default_now=lambda: datetime.now(timezone.utc),
-            converters={"fa": lambda value: value.replace(year=1405)},
+            locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
+            renderers={"fa": PersianRenderer()},
         )
 
         repo, validator, i18n, editor = build_i18n_runtime(
@@ -120,22 +133,25 @@ def main() -> None:
 
         validator.validate_all()
 
-        print(i18n.msg("user.operation_failed", locale="fa"))
-        print(i18n.msg("user.greeting", locale="fa", name="Sara"))
+        print(i18n.msg("user.greeting", name="Sara"))
         print(i18n.msg(
             "user.report",
             locale="fa",
             date=wrapped_date(date(2026, 4, 17)),
-            dt=wrapped_datetime(datetime(2026, 4, 17, 8, 45, 0)),
+            dt=wrapped_datetime(datetime(2026, 4, 17, 8, 45, 0, tzinfo=timezone.utc)),
             amount=grouped_number("1234567"),
             status=enum_ref("order_status", OrderStatus.PENDING),
             raw_date=date(2026, 4, 17),
         ))
 
+        # Unknown locales fail loudly.
+        try:
+            i18n.msg("user.greeting", locale="de", name="Sara")
+        except Exception as exc:  # demo output
+            print(type(exc).__name__, exc)
+
         editor.set_value("fa", "messages.user.operation_failed", "خطا در انجام عملیات")
         print(i18n.msg("user.operation_failed", locale="fa"))
-
-        print(formatter.now_as_text(locale="en"))
 
         repo.clear_cache()
 

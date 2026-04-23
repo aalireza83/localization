@@ -1,6 +1,6 @@
 # localization
 
-A production-focused Python localization package for loading, validating, querying, and editing JSON locale files.
+Small, explicit, production-oriented Python localization for JSON locale files.
 
 ## Features
 
@@ -19,31 +19,32 @@ A production-focused Python localization package for loading, validating, queryi
 
 - Python 3.11+
 
----
-
-## Expected layout
+## Expected file layout
 
 ```text
 project/
   manifest.json
   locales/
-    en.json
     fa.json
+    en.json
 ```
 
-### `manifest.json`
+`manifest.json`:
 
 ```json
 {
-  "default_locale": "en",
+  "default_locale": "fa",
   "locales": {
-    "en": {"label": "English", "native_name": "English", "direction": "ltr"},
-    "fa": {"label": "فارسی", "native_name": "فارسی", "direction": "rtl"}
+    "fa": {"label": "Farsi", "native_name": "فارسی", "direction": "rtl"},
+    "en": {"label": "English", "native_name": "English", "direction": "ltr"}
   }
 }
 ```
 
-> `default_locale` is enforced as `en`.
+Important manifest rules:
+- `default_locale` can be any declared locale.
+- `locales` must be non-empty.
+- unknown locales are errors (no silent fallback).
 
 ---
 
@@ -216,7 +217,7 @@ value = wrapped_datetime(datetime(2026, 4, 17, 8, 45, 0, tzinfo=UTC))
 from datetime import UTC, date, datetime
 from localization import grouped_number, wrapped_date, wrapped_datetime
 
-text = i18n.msg(
+print(i18n.msg(
     "user.report",
     locale="fa",
     date=wrapped_date(date(2026, 4, 17)),
@@ -286,13 +287,11 @@ These are adapted internally to renderer behavior, so existing code can migrate 
 
 ## Public API overview
 
-### Runtime builders
-
+### Builders
 - `build_i18n_runtime(...)`
 - `build_runtime(...)`
 
-### Core classes
-
+### Main classes
 - `LocaleRepository`
 - `LocaleValidator`
 - `I18nService`
@@ -307,7 +306,6 @@ Backward-compatibility interfaces:
 - `TimezoneLocaleConverter`
 
 ### Wrapper helpers
-
 - `wrapped_date`
 - `wrapped_datetime`
 - `grouped_number`
@@ -315,49 +313,14 @@ Backward-compatibility interfaces:
 
 ---
 
-## Validation behavior
+## Run tests
 
-`LocaleValidator` checks:
-
-1. Required root sections (`_meta`, `messages`, `enums`, `faqs`)
-2. `_meta.locale` and `_meta.version`
-3. Message/enum/faq structures and field types
-4. Placeholder compatibility against `en` for overlapping message keys
-5. Optional complete-structure parity (`require_complete_locales=True`)
-
----
-
-## Editing locale files
-
-```python
-editor.set_value("fa", "messages.user.greeting", "سلام {name}")
-editor.delete_value("fa", "faqs.payment.items.refund_time")
+```bash
+pytest -q
 ```
 
-- `_meta` paths are protected
-- edits are validated before writing
+## Example script
 
----
-
-## Exceptions
-
-- `I18nError`
-- `ManifestError`
-- `LocaleNotFoundError`
-- `LocaleDataError`
-- `MissingTranslationError`
-- `PlaceholderError`
-- `ValueFormattingError`
-- `LocaleEditError`
-
-Backward-compatible aliases:
-
-- `TranslationValidationError`
-- `TranslationKeyNotFoundError`
-
----
-
-## Example and tests
-
-- Example: `examples/basic_usage.py`
-- Run tests: `pytest -q`
+```bash
+python examples/basic_usage.py
+```

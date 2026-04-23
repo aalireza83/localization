@@ -42,6 +42,7 @@ __all__ = [
     "LocaleEditor",
     "LocaleNotFoundError",
     "LocaleRepository",
+    "LocaleRenderer",
     "LocaleValidator",
     "LocaleConverter",
     "LocaleRenderer",
