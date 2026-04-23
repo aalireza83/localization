@@ -2,6 +2,10 @@
 
 Small, explicit, production-oriented Python localization for JSON locale files.
 
+## Why this library?
+
+`localization` gives you a strict, predictable i18n workflow for Python projects that store translations in JSON files. It combines manifest-based locale discovery, runtime message lookup, placeholder formatting, and validation/editing utilities so teams can ship multilingual features without hidden behavior.
+
 ## Features
 
 - Manifest-based locale discovery
@@ -11,15 +15,116 @@ Small, explicit, production-oriented Python localization for JSON locale files.
 - Validation of locale schemas and placeholder compatibility
 - Safe path-based locale editing
 - Two-stage locale-aware date/datetime formatting:
-  1) timezone normalization, 2) locale rendering
+  1. Timezone normalization
+  2. Locale rendering
 
----
+## Installation
 
-## Requirements
+### From source (local repository)
 
-- Python 3.11+
+```bash
+pip install .
+```
 
-## Expected file layout
+### Editable install for development
+
+```bash
+pip install -e .
+```
+
+## Quick Start
+
+```python
+from __future__ import annotations
+
+import json
+from datetime import UTC, date, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
+
+from localization import (
+    LocaleRenderer,
+    LocaleValueFormatter,
+    build_i18n_runtime,
+    wrapped_date,
+    wrapped_datetime,
+)
+
+
+class PersianRenderer(LocaleRenderer):
+    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
+        return f"jalali({value.year}-{value.month:02d}-{value.day:02d})"
+
+    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
+        return f"jalali({value.year}-{value.month:02d}-{value.day:02d} {value.hour:02d}:{value.minute:02d}:{value.second:02d})"
+
+
+with TemporaryDirectory() as tmp_dir:
+    root = Path(tmp_dir)
+    locales_dir = root / "locales"
+    locales_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = {
+        "default_locale": "fa",
+        "locales": {
+            "fa": {"label": "Farsi", "native_name": "فارسی", "direction": "rtl"},
+            "en": {"label": "English", "native_name": "English", "direction": "ltr"},
+        },
+    }
+
+    fa = {
+        "_meta": {"locale": "fa", "version": 1},
+        "messages": {
+            "user": {
+                "greeting": "سلام {name}",
+                "report": "تاریخ {date}، زمان {dt}",
+            }
+        },
+        "enums": {},
+        "faqs": {},
+    }
+
+    en = {
+        "_meta": {"locale": "en", "version": 1},
+        "messages": {
+            "user": {
+                "greeting": "Hello {name}",
+                "report": "Date {date}, datetime {dt}",
+            }
+        },
+        "enums": {},
+        "faqs": {},
+    }
+
+    (root / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    (locales_dir / "fa.json").write_text(json.dumps(fa, ensure_ascii=False, indent=2), encoding="utf-8")
+    (locales_dir / "en.json").write_text(json.dumps(en, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    formatter = LocaleValueFormatter(
+        default_now=lambda: datetime.now(tz=UTC),
+        locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
+        renderers={"fa": PersianRenderer()},
+    )
+
+    _, validator, i18n, _ = build_i18n_runtime(
+        base_dir=locales_dir,
+        manifest_path=root / "manifest.json",
+        value_formatter=formatter,
+    )
+
+    validator.validate_all()
+
+    print(i18n.msg("user.greeting", locale="fa", name="Sara"))
+    print(i18n.msg(
+        "user.report",
+        locale="fa",
+        date=wrapped_date(date(2026, 4, 17)),
+        dt=wrapped_datetime(datetime(2026, 4, 17, 8, 45, tzinfo=UTC)),
+    ))
+```
+
+## Expected File Layout
 
 ```text
 project/
@@ -29,289 +134,43 @@ project/
     en.json
 ```
 
-`manifest.json`:
+## Basic Usage
 
-```json
-{
-  "default_locale": "fa",
-  "locales": {
-    "fa": {"label": "Farsi", "native_name": "فارسی", "direction": "rtl"},
-    "en": {"label": "English", "native_name": "English", "direction": "ltr"}
-  }
-}
-```
-
-Important manifest rules:
-- `default_locale` can be any declared locale.
-- `locales` must be non-empty.
-- unknown locales are errors (no silent fallback).
-
----
-
-## Formatter redesign: two-stage temporal pipeline
-
-`LocaleValueFormatter` now formats temporal wrapped values in **two explicit stages**.
-
-### Stage 1: timezone normalization (`datetime` values)
-
-Timezone resolution order is fixed and explicit:
-
-1. `locale_timezones[locale]`
-2. `default_timezone`
-3. UTC
-
-### Stage 2: string rendering (`date` and `datetime`)
-
-Renderer resolution order is also fixed and explicit:
-
-1. locale renderer from `renderers[locale]`
-2. `default_renderer`
-3. built-in `StrftimeRenderer` fallback
-
-This makes behavior predictable and easy to reason about.
-
----
-
-## Naive vs aware datetime semantics
-
-### Aware datetimes
-
-Aware values are normalized with `astimezone(resolved_timezone)`.
-
-### Naive datetimes
-
-The formatter uses one explicit rule:
-
-- If `naive_input_timezone` is **not** set, naive datetimes are left unchanged (safe default).
-- If `naive_input_timezone` **is** set, naive values are first interpreted in that timezone and then normalized to the resolved target timezone.
-
-This avoids hidden assumptions while still allowing explicit conversion rules.
-
----
-
-## Renderer contract
-
-Use `LocaleRenderer` for locale-specific final string output:
+### Message lookup
 
 ```python
-from datetime import date, datetime
-from localization import LocaleRenderer
-
-class MyRenderer(LocaleRenderer):
-    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
-        return value.strftime(pattern or "%Y/%m/%d")
-
-    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
-        return value.strftime(pattern or "%Y/%m/%d %H:%M:%S")
+print(i18n.msg("user.greeting", locale="en", name="Sara"))
 ```
 
-A renderer returns the final `str`, so locale-specific calendars (for example Jalali/Shamsi formatting) are straightforward to implement.
-
----
-
-## Usage examples
-
-### 1) Default timezone + default renderer only
+### Placeholders
 
 ```python
-from datetime import UTC, datetime
-from localization import LocaleValueFormatter
-
-formatter = LocaleValueFormatter(
-    default_now=lambda: datetime.now(tz=UTC),
-)
-
-# timezone fallback: UTC
-# renderer fallback: built-in strftime renderer
-print(formatter.format_datetime(datetime(2026, 4, 15, 8, 30, tzinfo=UTC), locale="en"))
+print(i18n.msg("user.greeting", locale="fa", name="سارا"))
 ```
 
-### 2) Locale-specific timezone
+### Locale selection
 
 ```python
-from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
-from localization import LocaleValueFormatter
-
-formatter = LocaleValueFormatter(
-    default_now=lambda: datetime.now(tz=UTC),
-    locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
-    default_timezone=ZoneInfo("UTC"),
-)
-
-# fa uses Asia/Tehran, others use default UTC
+print(i18n.msg("user.greeting"))            # uses manifest default_locale
+print(i18n.msg("user.greeting", locale="en"))
 ```
 
-### 3) Locale-specific renderer
+## Advanced Usage (Preview)
 
-```python
-from datetime import date, datetime
-from localization import LocaleRenderer, LocaleValueFormatter
+- Temporal wrappers: `wrapped_date`, `wrapped_datetime`
+- Structured references: `enum_ref`
+- Numeric formatting wrapper: `grouped_number`
+- Formatter customization: locale timezones, renderers, and fallback behavior in `LocaleValueFormatter`
 
-class PrefixRenderer(LocaleRenderer):
-    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
-        return f"{locale}:{value.strftime(pattern or '%Y/%m/%d')}"
+See the documentation pages below for full details.
 
-    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
-        return f"{locale}:{value.strftime(pattern or '%Y/%m/%d %H:%M:%S')}"
+## Documentation
 
-formatter = LocaleValueFormatter(
-    default_now=lambda: datetime.now(),
-    renderers={"fa": PrefixRenderer()},
-)
-```
-
-### 4) Fallback to default renderer
-
-```python
-formatter = LocaleValueFormatter(
-    default_now=lambda: datetime.now(),
-    default_renderer=PrefixRenderer(),
-)
-# any locale without a specific renderer uses default_renderer
-```
-
-### 5) Persian example: Tehran timezone + Jalali/Shamsi-like output
-
-```python
-from datetime import date, datetime, UTC
-from zoneinfo import ZoneInfo
-from localization import LocaleRenderer, LocaleValueFormatter
-
-class PersianJalaliRenderer(LocaleRenderer):
-    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
-        # plug real Jalali conversion here (e.g. your own implementation/library)
-        return f"jalali({value.year}-{value.month:02d}-{value.day:02d})"
-
-    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
-        return f"jalali({value.year}-{value.month:02d}-{value.day:02d} {value.hour:02d}:{value.minute:02d}:{value.second:02d})"
-
-formatter = LocaleValueFormatter(
-    default_now=lambda: datetime.now(tz=UTC),
-    locale_timezones={"fa": ZoneInfo("Asia/Tehran")},
-    renderers={"fa": PersianJalaliRenderer()},
-)
-```
-
-### 6) Wrapped `date`
-
-```python
-from datetime import date
-from localization import wrapped_date
-
-value = wrapped_date(date(2026, 4, 17))
-```
-
-### 7) Wrapped `datetime`
-
-```python
-from datetime import UTC, datetime
-from localization import wrapped_datetime
-
-value = wrapped_datetime(datetime(2026, 4, 17, 8, 45, 0, tzinfo=UTC))
-```
-
-### 8) Mixed placeholders (wrapped + raw)
-
-```python
-from datetime import UTC, date, datetime
-from localization import grouped_number, wrapped_date, wrapped_datetime
-
-print(i18n.msg(
-    "user.report",
-    locale="fa",
-    date=wrapped_date(date(2026, 4, 17)),
-    dt=wrapped_datetime(datetime(2026, 4, 17, 8, 45, 0, tzinfo=UTC)),
-    amount=grouped_number("1234567"),
-    raw_date=date(2026, 4, 17),  # remains raw, not auto-formatted
-)
-```
-
----
-
-## Advanced examples
-
-### Custom renderer implementation
-
-```python
-class CompactRenderer(LocaleRenderer):
-    def render_date(self, value: date, *, locale: str, pattern: str | None = None) -> str:
-        return value.strftime(pattern or "%d-%m-%Y")
-
-    def render_datetime(self, value: datetime, *, locale: str, pattern: str | None = None) -> str:
-        return value.strftime(pattern or "%d-%m-%Y %H:%M")
-```
-
-### Jalali/Shamsi renderer hook
-
-Use any calendar conversion implementation you prefer inside `render_date` / `render_datetime`.
-The formatter only requires a final `str`, so non-Gregorian output is a first-class use case.
-
-### Raw values remain raw
-
-Only wrapped values (`wrapped_date`, `wrapped_datetime`, `grouped_number`, `enum_ref`) are specially processed.
-Unwrapped values are passed through Python formatting unchanged.
-
----
-
-## Backward compatibility and migration notes
-
-### What changed
-
-Old design centered around converter methods that returned Python temporal values:
-
-- `convert_date(...) -> date`
-- `convert_datetime(...) -> datetime`
-
-New design separates concerns:
-
-1. timezone normalization
-2. final rendering to `str`
-
-### Why this changed
-
-Locale-specific calendar formatting (for example Persian/Jalali) often needs direct string output.
-Returning only `date`/`datetime` from locale hooks was too restrictive.
-
-### Compatibility behavior
-
-`LocaleValueFormatter` still accepts older converter APIs:
-
-- `converters={...}` and `default_converter=...`
-- callable converters (`Callable[[date | datetime], date | datetime]`)
-- object-based legacy converters with `convert_date` / `convert_datetime`
-
-These are adapted internally to renderer behavior, so existing code can migrate incrementally.
-
----
-
-## Public API overview
-
-### Builders
-- `build_i18n_runtime(...)`
-- `build_runtime(...)`
-
-### Main classes
-- `LocaleRepository`
-- `LocaleValidator`
-- `I18nService`
-- `LocaleEditor`
-- `LocaleValueFormatter`
-- `LocaleRenderer`
-- `StrftimeRenderer`
-
-Backward-compatibility interfaces:
-
-- `LocaleConverter`
-- `TimezoneLocaleConverter`
-
-### Wrapper helpers
-- `wrapped_date`
-- `wrapped_datetime`
-- `grouped_number`
-- `enum_ref`
-
----
+- Getting Started → `docs/getting-started.md`
+- Locale Schema → `docs/locale-schema.md`
+- Value Formatting → `docs/value-formatting.md`
+- Validation & Editing → `docs/editor-and-validation.md`
+- Migration Guide → `docs/migration.md`
 
 ## Run tests
 
